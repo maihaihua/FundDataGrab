@@ -1,0 +1,107 @@
+var request = require('request'),
+    cheerio = require('cheerio'),
+    fs = require('fs'),
+    hyutils = require('@maihaihua/hyutils');
+var errlog = fs.createWriteStream('errlog.txt'),
+    codeForMore = fs.createWriteStream('forMore.txt');
+
+function saveData(resText, code, boolen) {
+    console.log(code);
+    try {
+        var tableReg = /(<table.*<\/table>)/;
+        var match = resText.match(tableReg)[0];
+        if (match) {
+            var $ = cheerio.load(resText.match(tableReg)[0]);
+            var $tr = $('tbody tr');
+            // console.log($tr[0].children[0].children);
+            if ($tr.length == 5000) {
+                codeForMore.write(code + '\n');
+            }
+            var tmpObj = [];
+            for (var i = 0; i < $tr.length; i++) {
+                $tds = $tr[i].children;
+                tmpObj.push({
+                    date: $tds[0].children[0].data,
+                    price: $tds[1].children[0] ? $tds[1].children[0].data : 0,
+                    total: $tds[2].children[0] ? $tds[2].children[0].data : 0,
+                    del: $tds[3].children[0] ? $tds[3].children[0].data : 0
+                });
+            }
+            hyutils.file.writeFile('data/' + code, JSON.stringify(tmpObj,null,4),function(err){
+                if(err){
+                    console.log(err);
+                    throw err;
+                }
+            });
+        } else {
+            hyutils.file.writeFile('error/'+code, resText, function(err){
+                if(err){
+                    console.log(err);
+                    throw err;
+                }
+            });
+        }
+    } catch (e) {
+        errlog.write(code + ' Parse Error!' + (e.message || e.msg || JSON.stringify(e)) + '\n');
+        hyutils.file.writeFile('error/'+code, resText);
+    }
+}
+
+function genRequest(code){
+    var urlFormat = 'http://fund.eastmoney.com/f10/F10DataApi.aspx?type=lsjz&code={code}&page=1&per=5000&sdate=&edate=&rt={random}';
+    var reg = /\{(.*?)\}/g;
+    var url = urlFormat.replace(reg, function(node, key) {
+        return {
+            code: code,
+            random: Math.random()
+        }[key];
+    });
+    return {
+        url: url,
+        callback: function(body,headers){
+            saveData(body,code);
+        }
+    }
+}
+
+function getAllCode(){
+    var promise = Promise.defer();
+    var util = new hyutils.download.DownloadUtil();
+    const reqs = [];
+    util.push({
+        timeout:10000,
+        url: 'http://fund.eastmoney.com/js/fundcode_search.js',
+        callback: function(body,headers){
+            eval(body);
+            for(var i = 0; i < r.length; i++){
+                reqs.push(r[i][0]);
+            }
+        }
+    });
+    util.eventBus.on('error',function(){
+        promise.reject();
+    });
+    util.eventBus.on('finish',function(data){
+        promise.resolve(reqs);
+    })
+    util.start();
+    return promise.promise;
+}
+
+getAllCode().then(data=> {
+    var util = new hyutils.download.DownloadUtil({queueLimit:100});
+    for (var i = 0; i < data.length; i++){
+        var code = data[i];
+        var req = genRequest(code);
+        util.push(req);
+    }
+    util.eventBus.on('error',function(err){
+        errlog.write(JSON.stringify(err,null,4));
+    });
+    util.eventBus.on('finish',function(data){
+        console.log('finish');
+    });
+    util.start();
+}).catch(err=> {
+    console.log(err);
+})
